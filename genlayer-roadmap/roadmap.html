@@ -250,15 +250,6 @@ function dotGrid(alpha, radius, cx = W / 2, cy = H / 2) {
   }
   ctx.restore();
 }
-function hudCorners(a, color, inset = 56, len = 34) {
-  if (a <= 0) return;
-  ctx.save(); ctx.globalAlpha = a; ctx.strokeStyle = color; ctx.lineWidth = 2;
-  const pts = [[inset, inset, 1, 1], [W - inset, inset, -1, 1], [inset, H - inset, 1, -1], [W - inset, H - inset, -1, -1]];
-  for (const [x, y, sx, sy] of pts) {
-    ctx.beginPath(); ctx.moveTo(x + sx * len, y); ctx.lineTo(x, y); ctx.lineTo(x, y + sy * len); ctx.stroke();
-  }
-  ctx.restore();
-}
 
 // ---------- SCENE 1: white intro, logo build, fly into the diamond ----------
 function scene1(t) {
@@ -280,7 +271,6 @@ function scene1(t) {
   ctx.beginPath(); ctx.moveTo(W / 2, 470 - sc * 520); ctx.lineTo(W / 2, 470 + sc * 620); ctx.stroke();
   ctx.restore();
 
-  hudCorners(uiA * E.outCubic(P(t, 0.2, 0.6)), C.blue);
   ctx.save(); ctx.globalAlpha = uiA * E.outCubic(P(t, 0.4, 0.6));
   font(18, 600); ctx.letterSpacing = '6px'; ctx.fillStyle = C.blue;
   ctx.textAlign = 'left'; ctx.fillText('GENLAYER / ROADMAP', 100, 112);
@@ -654,7 +644,6 @@ function hud(t, a, cam) {
   ctx.fillText(`0${cur + 1} / 05`, sx - 24, 103);
   ctx.letterSpacing = '0px';
   ctx.restore();
-  hudCorners(a * 0.5, rgba(C.sky, 0.7));
 }
 function scene3(t) {
   const cam = camX(t);
@@ -693,7 +682,6 @@ function scene4(t) {
   g.addColorStop(0, '#E6EFFF'); g.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   dotGrid(0.16, 300 + E.outCubic(clamp(u / 2)) * 1600, W / 2, 330);
-  hudCorners(E.outCubic(P(u, 0.3, 0.6)), C.blue);
 
   // logo
   const lp = E.outExpo(P(u, 0.05, 1.3));
