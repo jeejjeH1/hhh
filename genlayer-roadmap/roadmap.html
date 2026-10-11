@@ -153,13 +153,17 @@ const LINE_Y = 580;       // timeline y
 const ARR0 = 10.4, STEP = 5.0, HOLD = 3.8, MOVE = 1.2;
 const arrive = i => ARR0 + i * STEP;
 const depart = i => i === 4 ? 33.7 : arrive(i) + HOLD;
+// Mainnet has not been reached yet: the travelled line stops short of it.
+const camTarget = i => i === 4 ? i * SPACING - 200 : i * SPACING;
+const NOW_X = 4 * SPACING - 380;          // world x of "we are here"
+const headWorld = cam => Math.min(Math.max(cam, 0), NOW_X);
 
 function camX(t) {
   if (t < ARR0) return lerp(-2200, 0, E.outCubic(P(t, 8.9, ARR0 - 8.9)));
   for (let i = 4; i >= 0; i--) {
     if (t >= arrive(i)) {
-      if (i === 4 || t < depart(i)) return i * SPACING;
-      return lerp(i * SPACING, (i + 1) * SPACING, E.inOutCubic(P(t, depart(i), MOVE)));
+      if (i === 4 || t < depart(i)) return camTarget(i);
+      return lerp(camTarget(i), camTarget(i + 1), E.inOutCubic(P(t, depart(i), MOVE)));
     }
   }
   return 0;
@@ -453,7 +457,7 @@ function drawMilestone(i, t, cam) {
   // tag
   ctx.globalAlpha = A * E.outCubic(P(u, 0.1, 0.5));
   font(20, 600); ctx.letterSpacing = '7px'; ctx.fillStyle = C.sky; ctx.textAlign = 'left';
-  ctx.fillText(`PHASE 0${i + 1}  /  05`, tx + (1 - E.outCubic(P(u, 0.1, 0.5))) * 30, 318);
+  ctx.fillText(`PHASE 0${i + 1}  /  05` + (i === 4 ? '  \u00B7  NEXT MILESTONE' : ''), tx + (1 - E.outCubic(P(u, 0.1, 0.5))) * 30, 318);
   ctx.letterSpacing = '0px';
   ctx.globalAlpha = A;
   // date
@@ -470,7 +474,27 @@ function drawMilestone(i, t, cam) {
     ctx.shadowColor = rgba(C.blue2, 0.9); ctx.shadowBlur = 40 * E.outCubic(P(u, 0.6, 1));
   } else ctx.fillStyle = C.white;
   maskText(m.name, tx - 6, 532, 140, P(u, 0.3, 1.0));
-  ctx.shadowBlur = 0; ctx.letterSpacing = '0px';
+  ctx.shadowBlur = 0;
+  if (i === 4) {
+    const tw = ctx.measureText(m.name).width;
+    const pp = E.outBack(P(u, 0.9, 0.6));
+    if (pp > 0) {
+      ctx.save();
+      ctx.globalAlpha = A * clamp(pp);
+      ctx.translate(tx + tw + 34, 478); ctx.scale(pp, pp);
+      font(22, 700); ctx.letterSpacing = '5px';
+      const label = 'UPCOMING', lw = ctx.measureText(label).width + 66;
+      ctx.beginPath(); ctx.roundRect(0, -26, lw, 52, 26);
+      ctx.fillStyle = rgba(C.blue, 0.22); ctx.fill();
+      ctx.strokeStyle = C.blue2; ctx.lineWidth = 2; ctx.stroke();
+      const blink = 0.45 + 0.55 * Math.abs(Math.sin(t * 3));
+      ctx.fillStyle = rgba(C.sky, blink); ctx.shadowColor = C.blue2; ctx.shadowBlur = 14;
+      ctx.beginPath(); ctx.arc(26, 0, 6, 0, 6.283); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.fillStyle = C.white; ctx.textAlign = 'left'; ctx.fillText(label, 44, 8);
+      ctx.restore();
+    }
+  }
+  ctx.letterSpacing = '0px';
 
   // description
   font(33, 400); ctx.fillStyle = rgba(C.white, 0.8);
@@ -494,9 +518,10 @@ function drawNode(i, t, cam) {
   const x = NODE_X0 + i * SPACING - cam, y = LINE_Y;
   if (x < -100 || x > W + 100) return;
   const act = E.outBack(P(t, arrive(i) - 0.25, 0.6)) * (i === 4 ? 1 : 1 - E.inOutCubic(P(t, depart(i), 0.7)));
-  const passed = cam >= i * SPACING - 2;
+  const passed = headWorld(cam) >= i * SPACING - 2;
   const big = i === 4 ? 1.35 : 1;
   ctx.save();
+  if (i === 4) { drawTarget(x, y, t, act); ctx.restore(); return; }
   // pulse rings
   if (act > 0.05) {
     for (let k = 0; k < 3; k++) {
@@ -529,8 +554,49 @@ function drawNode(i, t, cam) {
   }
   ctx.restore();
 }
+// Mainnet: an upcoming target, not a reached node
+function drawTarget(x, y, t, act) {
+  const a = 0.5 + 0.5 * clamp(act);
+  const r = 26 + 10 * clamp(act);
+  const g = ctx.createRadialGradient(x, y, 0, x, y, 220);
+  g.addColorStop(0, rgba(C.blue2, 0.35 * a)); g.addColorStop(1, rgba(C.blue2, 0));
+  ctx.fillStyle = g; ctx.fillRect(x - 220, y - 220, 440, 440);
+  // beacon pings
+  for (let k = 0; k < 2; k++) {
+    const ph = (t * 0.6 + k / 2) % 1;
+    ctx.strokeStyle = rgba(C.sky, (1 - ph) * 0.5 * a); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r + ph * 110, 0, 6.283); ctx.stroke();
+  }
+  // rotating dashed ring
+  ctx.save(); ctx.translate(x, y); ctx.rotate(t * 0.8);
+  ctx.strokeStyle = rgba(C.blue2, a); ctx.lineWidth = 2.5; ctx.setLineDash([9, 8]);
+  ctx.beginPath(); ctx.arc(0, 0, r + 12, 0, 6.283); ctx.stroke();
+  ctx.setLineDash([]); ctx.restore();
+  // reticle ticks
+  ctx.strokeStyle = rgba(C.white, 0.8 * a); ctx.lineWidth = 2;
+  for (let k = 0; k < 4; k++) {
+    const an = k * Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(an) * (r + 20), y + Math.sin(an) * (r + 20));
+    ctx.lineTo(x + Math.cos(an) * (r + 34), y + Math.sin(an) * (r + 34));
+    ctx.stroke();
+  }
+  // hollow core
+  ctx.strokeStyle = rgba(C.white, 0.9 * a); ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, r - 10, 0, 6.283); ctx.stroke();
+  ctx.fillStyle = rgba(C.sky, (0.35 + 0.35 * Math.abs(Math.sin(t * 2))) * a);
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, 6.283); ctx.fill();
+  const la = 1 - clamp(act);
+  if (la > 0.02) {
+    ctx.globalAlpha = la * 0.8;
+    font(18, 600); ctx.letterSpacing = '3px'; ctx.textAlign = 'center';
+    ctx.fillStyle = C.sky; ctx.fillText('MAINNET', x, y - 70);
+    ctx.fillStyle = rgba(C.white, 0.5); font(16, 500); ctx.fillText('Q4 2026', x, y + 78);
+    ctx.letterSpacing = '0px';
+  }
+}
 function drawTrack(t, cam, a) {
-  const headX = NODE_X0 + Math.max(cam, 0) - cam; // head sits on the active node
+  const headX = NODE_X0 + headWorld(cam) - cam; // head follows the camera until NOW_X
   ctx.save(); ctx.globalAlpha = a;
   // future (dashed)
   ctx.strokeStyle = rgba(C.white, 0.22); ctx.lineWidth = 2; ctx.setLineDash([10, 12]);
@@ -551,6 +617,21 @@ function drawTrack(t, cam, a) {
     cg.addColorStop(0, 'rgba(255,255,255,0)'); cg.addColorStop(1, 'rgba(255,255,255,0.9)');
     ctx.fillStyle = cg; ctx.fillRect(px - 260, LINE_Y - 1.5, 260, 3);
   }
+  // "we are here" marker once the camera moves past the head
+  const ha = E.outCubic(P(cam, NOW_X, 250));
+  if (ha > 0) {
+    ctx.save(); ctx.globalAlpha = a * ha;
+    const ph = (t * 0.9) % 1;
+    ctx.strokeStyle = rgba(C.sky, 1 - ph); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(headX, LINE_Y, 10 + ph * 34, 0, 6.283); ctx.stroke();
+    ctx.fillStyle = C.white; ctx.shadowColor = C.blue2; ctx.shadowBlur = 30;
+    ctx.beginPath(); ctx.arc(headX, LINE_Y, 8, 0, 6.283); ctx.fill(); ctx.shadowBlur = 0;
+    ctx.fillStyle = rgba(C.sky, 0.8); ctx.fillRect(headX - 1, LINE_Y - 64, 2, 40);
+    font(17, 700); ctx.letterSpacing = '5px'; ctx.textAlign = 'center'; ctx.fillStyle = C.white;
+    ctx.fillText('WE ARE HERE', headX + 2, LINE_Y - 80);
+    ctx.letterSpacing = '0px';
+    ctx.restore();
+  }
   ctx.restore();
 }
 function hud(t, a, cam) {
@@ -561,14 +642,14 @@ function hud(t, a, cam) {
   ctx.fillText('GENLAYER', 150, 103);
   ctx.fillStyle = rgba(C.sky, 0.8); ctx.fillText('THE ROAD TO MAINNET', 312, 103);
   // progress segments top-right
-  const prog = clamp(cam / (4 * SPACING));
+  const prog = clamp(headWorld(cam) / (4 * SPACING));
   const sx = W - 112 - 5 * 64, sy = 96;
   for (let k = 0; k < 5; k++) {
     const segFill = clamp(prog * 4 - (k - 1));
     ctx.fillStyle = rgba(C.white, 0.18); ctx.fillRect(sx + k * 64, sy, 54, 3);
     ctx.fillStyle = C.blue2; ctx.fillRect(sx + k * 64, sy, 54 * (k === 0 ? 1 : segFill), 3);
   }
-  const cur = Math.min(4, Math.round(cam / SPACING));
+  const cur = Math.min(4, Math.round(cam / SPACING + 0.2));
   font(18, 600); ctx.textAlign = 'right'; ctx.fillStyle = rgba(C.white, 0.85);
   ctx.fillText(`0${cur + 1} / 05`, sx - 24, 103);
   ctx.letterSpacing = '0px';
@@ -585,21 +666,6 @@ function scene3(t) {
   for (let i = 0; i < 5; i++) drawMilestone(i, t, cam);
   for (let i = 0; i < 5; i++) drawNode(i, t, cam);
 
-  // Mainnet arrival: shockwave + anamorphic flare
-  const ma = t - arrive(4);
-  if (ma > -0.3) {
-    const nx = NODE_X0;
-    const sw = E.outCubic(P(ma, 0, 1.4));
-    ctx.save();
-    ctx.strokeStyle = rgba(C.sky, (1 - sw) * 0.9); ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(nx, LINE_Y, 30 + sw * 900, 0, 6.283); ctx.stroke();
-    const fl = Math.sin(clamp(ma / 1.6) * Math.PI) * 0.9 + 0.25 * clamp(ma / 1.6);
-    const fg = ctx.createRadialGradient(nx, LINE_Y, 0, nx, LINE_Y, 900);
-    fg.addColorStop(0, rgba('#CFE3FF', 0.9 * fl)); fg.addColorStop(1, rgba(C.blue, 0));
-    ctx.setTransform(1, 0, 0, 0.035, 0, LINE_Y * (1 - 0.035));
-    ctx.fillStyle = fg; ctx.fillRect(nx - 900, LINE_Y - 900, 1800, 1800);
-    ctx.restore();
-  }
   vignette(0.9);
   hud(t, E.outCubic(P(t, 10.0, 0.8)) * (1 - P(t, 33.4, 0.4)), cam);
 
@@ -608,12 +674,13 @@ function scene3(t) {
   if (wp > 0) {
     const r = E.inExpo(wp) * 2400;
     ctx.save();
-    const bg = ctx.createRadialGradient(NODE_X0, LINE_Y, 0, NODE_X0, LINE_Y, 120 + r * 2.5);
+    const fx = NODE_X0 + 4 * SPACING - cam;
+    const bg = ctx.createRadialGradient(fx, LINE_Y, 0, fx, LINE_Y, 120 + r * 2.5);
     bg.addColorStop(0, rgba('#DCEBFF', 0.9 * clamp(wp * 3))); bg.addColorStop(1, rgba(C.blue2, 0));
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = C.white;
     ctx.shadowColor = C.blue2; ctx.shadowBlur = 80;
-    ctx.beginPath(); ctx.arc(NODE_X0, LINE_Y, r, 0, 6.283); ctx.fill();
+    ctx.beginPath(); ctx.arc(fx, LINE_Y, r, 0, 6.283); ctx.fill();
     ctx.restore();
   }
 }
@@ -637,7 +704,6 @@ function scene4(t) {
   const parts = [['The road to ', C.ink], ['Mainnet', C.blue], [' continues.', C.ink]];
   const total = parts.reduce((s, [p]) => s + ctx.measureText(p).width, 0);
   let x = W / 2 - total / 2;
-  const hp = P(u, 0.45, 1.0);
   parts.forEach(([p, col], k) => {
     ctx.fillStyle = col; maskText(p, x, 560, 84, P(u, 0.45 + k * 0.12, 1.0));
     x += ctx.measureText(p).width;
@@ -652,12 +718,19 @@ function scene4(t) {
   const y = 820, x0 = 380, x1 = W - 380;
   const lp2 = E.inOutCubic(P(u, 1.3, 1.8));
   ctx.save();
-  ctx.strokeStyle = rgba(C.ink, 0.12); ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  const nowF = 0.875;
+  ctx.strokeStyle = rgba(C.ink, 0.22); ctx.lineWidth = 2; ctx.setLineDash([8, 9]);
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); ctx.setLineDash([]);
   const lg = ctx.createLinearGradient(x0, 0, x1, 0);
   lg.addColorStop(0, C.blue); lg.addColorStop(1, C.blue2);
   ctx.strokeStyle = lg; ctx.lineWidth = 4;
-  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(lerp(x0, x1, lp2), y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(lerp(x0, x1, lp2 * nowF), y); ctx.stroke();
+  if (lp2 > 0.98) {
+    const hx = lerp(x0, x1, nowF), ph = (u * 0.9) % 1;
+    ctx.strokeStyle = rgba(C.blue2, 1 - ph); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(hx, y, 7 + ph * 22, 0, 6.283); ctx.stroke();
+    ctx.fillStyle = C.blue; ctx.beginPath(); ctx.arc(hx, y, 7, 0, 6.283); ctx.fill();
+  }
   MILESTONES.forEach((m, k) => {
     const px = lerp(x0, x1, k / 4);
     const dp = E.outBack(P(u, 1.3 + k * 0.4, 0.5));
@@ -671,15 +744,19 @@ function scene4(t) {
       }
     }
     ctx.fillStyle = C.white; ctx.strokeStyle = C.blue; ctx.lineWidth = 3;
+    if (last) ctx.setLineDash([6, 5]);
     ctx.beginPath(); ctx.arc(px, y, (last ? 15 : 11) * dp, 0, 6.283); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = last ? C.blue : C.ink;
-    ctx.beginPath(); ctx.arc(px, y, (last ? 7 : 4.5) * dp, 0, 6.283); ctx.fill();
+    ctx.setLineDash([]);
+    if (!last) {
+      ctx.fillStyle = C.ink;
+      ctx.beginPath(); ctx.arc(px, y, 4.5 * dp, 0, 6.283); ctx.fill();
+    }
     const ta = clamp(dp);
     ctx.globalAlpha = ta;
     font(28, 700); ctx.textAlign = 'center'; ctx.fillStyle = last ? C.blue : C.ink;
     ctx.fillText(m.name, px, y - 40 + (1 - ta) * 10);
     font(19, 600); ctx.letterSpacing = '3px'; ctx.fillStyle = C.slate;
-    ctx.fillText(m.date, px, y + 54 - (1 - ta) * 10);
+    ctx.fillText(last ? 'NEXT \u00B7 ' + m.date : m.date, px, y + 54 - (1 - ta) * 10);
     ctx.letterSpacing = '0px';
     ctx.globalAlpha = 1;
   });
