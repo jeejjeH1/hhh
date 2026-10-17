@@ -1,0 +1,1228 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Startale USDC Vaults</title>
+<style>
+  @font-face { font-family: Poppins; font-weight: 300; src: url(assets/fonts/Poppins-300.woff2) format('woff2'); }
+  @font-face { font-family: Poppins; font-weight: 400; src: url(assets/fonts/Poppins-400.woff2) format('woff2'); }
+  @font-face { font-family: Poppins; font-weight: 500; src: url(assets/fonts/Poppins-500.woff2) format('woff2'); }
+  @font-face { font-family: Poppins; font-weight: 600; src: url(assets/fonts/Poppins-600.woff2) format('woff2'); }
+  @font-face { font-family: Poppins; font-weight: 700; src: url(assets/fonts/Poppins-700.woff2) format('woff2'); }
+  @font-face { font-family: Poppins; font-weight: 800; src: url(assets/fonts/Poppins-800.woff2) format('woff2'); }
+  html, body { margin: 0; padding: 0; background: #fff; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 56.25vw; max-height: 100vh; max-width: 177.78vh; margin: auto; }
+</style>
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script type="module">
+// Startale App — "Two new USDC vaults" motion graphic (1920x1080).
+// render(t) draws the frame at time t (seconds): the page plays live in a browser
+// (serve the folder over http) or is rendered frame by frame to video by render.mjs.
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from './vendor/RoundedBoxGeometry.js';
+import { RoomEnvironment } from './vendor/RoomEnvironment.js';
+
+const W = 1920, H = 1080, DURATION = 26;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const FONT = 'Poppins, sans-serif';
+
+const C = {
+  ink: '#0A0A0A', grey: '#6B7280', soft: '#9CA3AF', line: '#E5E7EB',
+  usdc: '#2775CA', usdcHi: '#4C96EA', mint: '#BDF3C8', lime: '#E5F9B8',
+  green: '#22C55E', greenDk: '#15803D', navy: '#01102B', morpho: '#2471FF',
+};
+
+// ---- timeline (beats of 120 BPM from 2.7 s; keep in sync with soundtrack.py) ----
+const T = {
+  snap: 1.0, word: 1.3, dock: 2.3,                       // S1 logo
+  s2: 2.7, safeLand: 3.7, hit1: 4.7, hit2: 5.7,          // S2 two coins into the safe
+  iris: 6.7, s3: 7.2,                                    // iris -> vault 1
+  wipe: 11.3, s4: 11.7,                                  // panel wipe -> vault 2
+  s4out: 15.8, s5: 16.2,                                 // -> powered by Morpho
+  s5out: 19.2, s6: 19.7, land: 20.7,                     // -> end card
+};
+
+// ---------- helpers ----------
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const P = (t, s, d) => clamp((t - s) / d);
+const E = {
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  inCubic: x => x * x * x,
+  inQuad: x => x * x,
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  outExpo: x => x === 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inExpo: x => x === 0 ? 0 : Math.pow(2, 10 * x - 10),
+  inOutExpo: x => x === 0 ? 0 : x === 1 ? 1 : x < .5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2,
+  outBack: x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); },
+  outBackS: x => { const c1 = 2.6, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); },
+  outElastic: x => x === 0 ? 0 : x === 1 ? 1 : Math.pow(2, -10 * x) * Math.sin((x * 10 - 0.75) * (2 * Math.PI) / 3) + 1,
+};
+function rand(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
+function font(size, weight = 700, ls = 0) { ctx.font = `${weight} ${size}px ${FONT}`; ctx.letterSpacing = ls + 'px'; }
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+// damped wobble that starts at t0
+const wob = (t, t0, f = 18, d = 6) => t < t0 ? 0 : Math.exp(-(t - t0) * d) * Math.sin((t - t0) * f);
+
+// A line of words that slide up out of a mask, one after another, and slide up and away on exit.
+// parts: [[word, color], ...]. Returns the line width.
+function words(parts, x, y, size, weight, t, t0, o = {}) {
+  font(size, weight, o.ls ?? -size * 0.025);
+  const space = ctx.measureText(' ').width;
+  const ws = parts.map(p => ctx.measureText(p[0]).width);
+  const total = ws.reduce((a, b) => a + b, 0) + space * (parts.length - 1);
+  let cx = o.align === 'center' ? x - total / 2 : o.align === 'right' ? x - total : x;
+  const st = o.st ?? 0.08;
+  parts.forEach((p, i) => {
+    const pin = P(t, t0 + i * st, o.din ?? 0.75);
+    const pout = o.tOut != null ? P(t, o.tOut + i * st * 0.6, 0.45) : 0;
+    if (pin > 0 && pout < 1) {
+      const dy = (1 - E.outExpo(pin)) * size * 1.15 - E.inCubic(pout) * size * 1.15;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(cx - size * 0.2, y - size * 1.05, ws[i] + size * 0.4, size * 1.38);
+      ctx.clip();
+      ctx.fillStyle = p[1];
+      ctx.fillText(p[0], cx, y + dy);
+      ctx.restore();
+    }
+    cx += ws[i] + space;
+  });
+  return total;
+}
+// whole-element fade/slide envelope
+function env(t, tin, tout, din = 0.5, dout = 0.4) {
+  const a = E.outCubic(P(t, tin, din));
+  const b = tout == null ? 0 : E.inCubic(P(t, tout, dout));
+  return { a: a * (1 - b), y: (1 - a) * 30 - b * 30, p: a, q: b };
+}
+
+// ---------- assets ----------
+async function rasterSVG(txt, scale) {
+  const m = txt.match(/width="([\d.]+)" height="([\d.]+)"/);
+  const w = +m[1], h = +m[2];
+  const img = new Image();
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(txt);
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return { c, w, h, s: scale };
+}
+const LOGO = {};
+async function loadAssets() {
+  await Promise.all([300, 400, 500, 600, 700, 800].map(w => document.fonts.load(`${w} 40px Poppins`)));
+  for (const n of ['startale-word', 'asseto', 'gauntlet', 'morpho', 'flowmark']) {
+    const txt = await (await fetch(`assets/logos/${n}.svg`)).text();
+    LOGO[n] = await rasterSVG(txt, 4);
+    if (n === 'morpho') {
+      // wings only, cropped to their bounds, at a high resolution for the big butterfly
+      const wings = txt.replace(/<path id="ink"[^>]*\/>/, '').replace(/viewBox="[^"]*"/, 'viewBox="11 9 66 61"')
+        .replace(/width="[\d.]+" height="[\d.]+"/, 'width="66" height="61"');
+      LOGO.wings = await rasterSVG(wings, 8);
+    }
+  }
+}
+// draw part of a rasterised logo: source region (sx, sw) in svg px, placed at x,y with scale k
+function logo(L, x, y, k, sx = 0, sw = L.w, sy = 0, sh = L.h) {
+  ctx.drawImage(L.c, sx * L.s, sy * L.s, sw * L.s, sh * L.s, x, y, sw * k, sh * k);
+}
+
+// ---------- background: soft green band with a halftone texture ----------
+const BLOBS = [ // x, y, radius, rgb, strength
+  [430, 820, 430, [222, 248, 178], 0.9],
+  [820, 560, 420, [205, 246, 196], 0.85],
+  [1240, 330, 470, [190, 242, 200], 0.9],
+  [1700, 120, 520, [178, 240, 190], 1.0],
+  [1880, 520, 300, [214, 248, 206], 0.6],
+  [180, 1020, 300, [234, 250, 196], 0.7],
+];
+function blobPos(i, t) {
+  const b = BLOBS[i];
+  return [b[0] + Math.sin(t * 0.23 + i * 1.7) * 70, b[1] + Math.cos(t * 0.19 + i * 2.3) * 45, b[2] * (1 + 0.08 * Math.sin(t * 0.31 + i))];
+}
+function drawBG(t, boost = 1) {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-50, -50, W + 100, H + 100);
+  const bp = BLOBS.map((_, i) => blobPos(i, t));
+  BLOBS.forEach((b, i) => {
+    const [x, y, r] = bp[i];
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const [R, G, B] = b[3];
+    g.addColorStop(0, `rgba(${R},${G},${B},${0.85 * b[4] * boost})`);
+    g.addColorStop(0.55, `rgba(${R},${G},${B},${0.35 * b[4] * boost})`);
+    g.addColorStop(1, `rgba(${R},${G},${B},0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  });
+  // halftone dots, sized by the local band intensity
+  const S = 13;
+  ctx.fillStyle = `rgba(120, 205, 130, ${0.32 * boost})`;
+  ctx.beginPath();
+  for (let gy = 0; gy < H + S; gy += S) {
+    for (let gx = (gy / S) % 2 ? S / 2 : 0; gx < W + S; gx += S) {
+      let I = 0;
+      for (let i = 0; i < bp.length; i++) {
+        const dx = gx - bp[i][0], dy = gy - bp[i][1], r = bp[i][2] * 0.55;
+        I += BLOBS[i][4] * Math.exp(-(dx * dx + dy * dy) / (2 * r * r));
+      }
+      if (I > 0.25) {
+        const rr = 2.1 * clamp((I - 0.25) / 0.75);
+        ctx.moveTo(gx + rr, gy);
+        ctx.arc(gx, gy, rr, 0, Math.PI * 2);
+      }
+    }
+  }
+  ctx.fill();
+}
+
+// ---------- Startale mark (8 pieces, measured from the key visual; units: half-extent 54) ----------
+const PIECES = [
+  { k: 'dm', x: 0, y: -38 }, { k: 'sq', x: 27, y: -27 }, { k: 'dm', x: 38, y: 0 }, { k: 'sq', x: 27, y: 27 },
+  { k: 'dm', x: 0, y: 38 }, { k: 'sq', x: -27, y: 27 }, { k: 'dm', x: -38, y: 0 }, { k: 'sq', x: -27, y: -27 },
+];
+function drawMark(cx, cy, s, rot, t, assemble, color = C.ink) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(rot);
+  ctx.fillStyle = color;
+  PIECES.forEach((p, i) => {
+    let ox = 0, oy = 0, r = 0, sc = 1;
+    if (assemble) {
+      const q = P(t, 0.15 + i * 0.07, 0.62);
+      if (q <= 0) return;
+      const e = E.outCubic(q);
+      const ang = Math.atan2(p.y, p.x);
+      const dist = (1 - e) * 820 / s;
+      ox = Math.cos(ang + (1 - e) * 1.2) * dist;
+      oy = Math.sin(ang + (1 - e) * 1.2) * dist;
+      r = (1 - e) * Math.PI * 1.6;
+      sc = lerp(0.3, 1, E.outBack(q));
+    }
+    ctx.save();
+    ctx.translate((p.x + ox) * s, (p.y + oy) * s);
+    ctx.rotate(r);
+    ctx.scale(sc * s, sc * s);
+    ctx.beginPath();
+    if (p.k === 'sq') ctx.rect(-11, -11, 22, 22);
+    else { ctx.moveTo(0, -16); ctx.lineTo(16, 0); ctx.lineTo(0, 16); ctx.lineTo(-16, 0); ctx.closePath(); }
+    ctx.fill();
+    ctx.restore();
+  });
+  ctx.restore();
+}
+// Full lockup with its top-left at (ox, oy) at scale s (s = 1 is the key-visual size).
+function drawLockup(ox, oy, s, t, o = {}) {
+  drawMark(ox + 54 * s, oy + 54 * s, s, o.rot || 0, t, o.assemble);
+  const rev = o.word ?? 1;
+  if (rev > 0) {
+    const L = LOGO['startale-word'];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox + 116 * s, oy - 10 * s, (L.w + 16) * s * rev, 140 * s);
+    ctx.clip();
+    logo(L, ox + 124 * s - (1 - E.outCubic(rev)) * 60 * s, oy + 8 * s, s);
+    ctx.restore();
+  }
+}
+
+// ---------- particles ----------
+function burst(x, y, t, t0, o = {}) {
+  const dt = t - t0, life = o.life ?? 1.1;
+  if (dt < 0 || dt > life) return;
+  const r = rand(o.seed ?? 7);
+  const n = o.n ?? 26;
+  const cols = o.colors ?? [C.usdc, C.green, '#8BE3A0', C.ink];
+  for (let i = 0; i < n; i++) {
+    const a = (o.a0 ?? 0) + (o.spread ?? Math.PI * 2) * r() - (o.spread ? o.spread / 2 : 0);
+    const sp = (o.speed ?? 520) * (0.35 + r() * 0.85);
+    const l = life * (0.55 + r() * 0.45);
+    const q = clamp(dt / l);
+    if (q >= 1) { r(); r(); continue; }
+    const d = sp * (1 - Math.pow(1 - q, 3)) * l * 0.55;
+    const px = x + Math.cos(a) * d, py = y + Math.sin(a) * d + (o.grav ?? 140) * q * q;
+    const sz = (o.size ?? 9) * (0.5 + r() * 0.8) * (1 - q);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(q * 6 + i);
+    ctx.globalAlpha = 1 - q * q;
+    ctx.fillStyle = cols[i % cols.length];
+    const kind = i % 3;
+    if (kind === 0) ctx.fillRect(-sz / 2, -sz / 2, sz, sz);
+    else if (kind === 1) { ctx.beginPath(); ctx.moveTo(0, -sz * .7); ctx.lineTo(sz * .7, 0); ctx.lineTo(0, sz * .7); ctx.lineTo(-sz * .7, 0); ctx.fill(); }
+    else { ctx.beginPath(); ctx.arc(0, 0, sz * 0.42, 0, Math.PI * 2); ctx.fill(); }
+    ctx.restore();
+  }
+}
+function ring(x, y, t, t0, o = {}) {
+  const q = P(t, t0, o.dur ?? 0.8);
+  if (q <= 0 || q >= 1) return;
+  ctx.save();
+  ctx.strokeStyle = o.color ?? C.green;
+  ctx.globalAlpha = (1 - q) * (o.alpha ?? 0.8);
+  ctx.lineWidth = (o.w ?? 6) * (1 - q) + 0.5;
+  ctx.beginPath();
+  ctx.ellipse(x, y, (o.r ?? 300) * E.outCubic(q), (o.r ?? 300) * E.outCubic(q) * (o.squash ?? 1), 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+function sparkle(x, y, s, a, rot = 0) {   // 4-point star
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate(rot); ctx.globalAlpha *= a;
+  ctx.beginPath();
+  ctx.moveTo(0, -s); ctx.quadraticCurveTo(0, 0, s, 0); ctx.quadraticCurveTo(0, 0, 0, s);
+  ctx.quadraticCurveTo(0, 0, -s, 0); ctx.quadraticCurveTo(0, 0, 0, -s);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ---------- UI bits ----------
+function pill(text, x, y, size, t, t0, o = {}) {
+  const e = E.outBack(P(t, t0, 0.55));
+  const out = o.tOut != null ? E.inCubic(P(t, o.tOut, 0.35)) : 0;
+  if (e <= 0 || out >= 1) return 0;
+  font(size, o.weight ?? 600, o.ls ?? size * 0.08);
+  const dot = o.dot !== false;
+  const pad = size * 0.9, tw = ctx.measureText(text).width;
+  const w = tw + pad * 2 + (dot ? size * 1.1 : 0), h = size * 2.2;
+  ctx.save();
+  ctx.globalAlpha = clamp(e) * (1 - out);
+  ctx.translate(x, y + h / 2 - out * 20);
+  ctx.scale(lerp(0.6, 1, e), lerp(0.6, 1, e));
+  ctx.translate(0, -h / 2);
+  rrect(0, 0, w, h, h / 2);
+  ctx.fillStyle = o.bg ?? 'rgba(255,255,255,0.85)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = o.stroke ?? 'rgba(10,10,10,0.12)';
+  ctx.stroke();
+  let tx = pad;
+  if (dot) {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+    ctx.fillStyle = rgba('#22C55E', 0.25 * pulse);
+    ctx.beginPath(); ctx.arc(pad + size * 0.3, h / 2, size * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.green;
+    ctx.beginPath(); ctx.arc(pad + size * 0.3, h / 2, size * 0.28, 0, Math.PI * 2); ctx.fill();
+    tx += size * 1.1;
+  }
+  ctx.fillStyle = o.color ?? C.ink;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, tx, h / 2 + size * 0.06);
+  ctx.textBaseline = 'alphabetic';
+  ctx.restore();
+  return w;
+}
+function handleTag(text, x, y, t, t0, tOut) {   // "@handle" tag
+  const e = E.outBack(P(t, t0, 0.5));
+  const out = tOut != null ? E.inCubic(P(t, tOut, 0.35)) : 0;
+  if (e <= 0 || out >= 1) return;
+  font(30, 500, 0);
+  const w = ctx.measureText(text).width + 44;
+  ctx.save();
+  ctx.globalAlpha = clamp(e) * (1 - out);
+  ctx.translate(x, y - out * 20);
+  ctx.scale(e, e);
+  rrect(0, -27, w, 54, 27);
+  ctx.fillStyle = '#F1F5F4';
+  ctx.fill();
+  ctx.fillStyle = '#374151';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 22, 2);
+  ctx.textBaseline = 'alphabetic';
+  ctx.restore();
+}
+function glow(x, y, r, color, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgba(color, a));
+  g.addColorStop(1, rgba(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(x - r, y - r, r * 2, r * 2);
+}
+
+// =====================================================================
+// 3D: USDC coins, the safe, collateral coins and the tokenised block
+// =====================================================================
+const glc = document.createElement('canvas');
+glc.width = W; glc.height = H;
+const renderer = new THREE.WebGLRenderer({ canvas: glc, antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(W, H, false);
+renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.05;
+const scene = new THREE.Scene();
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.9;
+const CAM_Z = 22, FOV = 28;
+const camera = new THREE.PerspectiveCamera(FOV, W / H, 0.1, 100);
+camera.position.set(0, 0, CAM_Z);
+const K = H / (2 * CAM_Z * Math.tan(THREE.MathUtils.degToRad(FOV / 2)));   // px per world unit at z = 0
+const wx = px => (px - W / 2) / K, wy = py => (H / 2 - py) / K;
+const key = new THREE.DirectionalLight(0xffffff, 2.0); key.position.set(-6, 9, 8); scene.add(key);
+const rimL = new THREE.DirectionalLight(0xA8F5B8, 1.6); rimL.position.set(8, 3, -4); scene.add(rimL);
+scene.add(new THREE.AmbientLight(0xffffff, 0.2));
+
+const phys = (color, o = {}) => new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0.05, clearcoat: 1, clearcoatRoughness: 0.12, ...o });
+const M = {
+  usdc: phys(0x2F7FD8),
+  white: phys(0xffffff, { roughness: 0.28 }),
+  safe: phys(0xF2F4F6, { roughness: 0.4, clearcoat: 0.6, clearcoatRoughness: 0.25 }),
+  recess: phys(0xD5DBE2, { roughness: 0.6, clearcoat: 0.2 }),
+  slot: phys(0x1C2128, { roughness: 0.7, clearcoat: 0.2 }),
+  btc: phys(0xF7931A),
+  eth: phys(0x627EEA),
+  navy: phys(0xffffff, { roughness: 0.32 }),
+  ring: new THREE.MeshBasicMaterial({ color: 0x34C779, transparent: true, opacity: 0.55 }),
+  ring2: new THREE.MeshBasicMaterial({ color: 0x2775CA, transparent: true, opacity: 0.25 }),
+};
+
+function arcShape(cx, cy, ri, ro, a0, a1, cw) {
+  const s = new THREE.Shape();
+  s.absarc(cx, cy, ro, a0, a1, cw);
+  s.absarc(cx, cy, ri, a1, a0, !cw);
+  s.closePath();
+  return s;
+}
+function usdcEmblem() {
+  const d = Math.PI / 180, a = 0.205, w = 0.118;
+  const bar = (y0, y1) => { const s = new THREE.Shape(); s.moveTo(-w / 2, y0); s.lineTo(w / 2, y0); s.lineTo(w / 2, y1); s.lineTo(-w / 2, y1); s.closePath(); return s; };
+  const shapes = [
+    arcShape(0, 0, 0.84, 0.99, 126 * d, 234 * d, false),
+    arcShape(0, 0, 0.84, 0.99, -54 * d, 54 * d, false),
+    arcShape(0, a, a - w / 2, a + w / 2, 28 * d, 270 * d, false),
+    arcShape(0, -a, a - w / 2, a + w / 2, 90 * d, -152 * d, true),
+    bar(2 * a + w / 2 - 0.03, 2 * a + w / 2 + 0.12),
+    bar(-2 * a - w / 2 - 0.12, -2 * a - w / 2 + 0.03),
+  ];
+  const geo = new THREE.ExtrudeGeometry(shapes, { depth: 0.035, bevelEnabled: true, bevelThickness: 0.014, bevelSize: 0.012, bevelSegments: 2, curveSegments: 40 });
+  return () => new THREE.Mesh(geo, M.white);
+}
+function decalEmblem(draw) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.translate(256, 256);
+  g.fillStyle = '#fff';
+  draw(g);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  const mat = new THREE.MeshPhysicalMaterial({ map: tex, transparent: true, roughness: 0.3, clearcoat: 1, depthWrite: false });
+  const geo = new THREE.CircleGeometry(1.18, 64);
+  return () => new THREE.Mesh(geo, mat);
+}
+const COIN_PROFILE = (() => {
+  const p = [new THREE.Vector2(1.18, -0.13), new THREE.Vector2(1.25, -0.175), new THREE.Vector2(1.40, -0.175)];
+  for (let i = 1; i < 18; i++) { const a = -Math.PI / 2 + Math.PI * i / 18; p.push(new THREE.Vector2(1.40 + 0.175 * Math.cos(a), 0.175 * Math.sin(a))); }
+  p.push(new THREE.Vector2(1.40, 0.175), new THREE.Vector2(1.25, 0.175), new THREE.Vector2(1.18, 0.13));
+  return new THREE.LatheGeometry(p, 96);
+})();
+const FACE = new THREE.CircleGeometry(1.19, 96);
+function makeCoin(mat, emblem) {
+  const g = new THREE.Group();
+  const rim = new THREE.Mesh(COIN_PROFILE, mat);
+  rim.rotation.x = Math.PI / 2;
+  g.add(rim);
+  for (const side of [1, -1]) {
+    const f = new THREE.Mesh(FACE, mat);
+    f.position.z = 0.13 * side;
+    if (side < 0) f.rotation.y = Math.PI;
+    g.add(f);
+    const e = emblem();
+    e.position.z = (0.13 + 0.003) * side;
+    if (side < 0) e.rotation.y = Math.PI;
+    g.add(e);
+  }
+  scene.add(g);
+  return g;
+}
+
+let coinA, coinB, safe, dial, ringG, ringMesh, ring2Mesh, orbit = [], cube, VOX = [];
+const dummy = new THREE.Object3D();
+function build3D() {
+  const usdc = usdcEmblem();
+  coinA = makeCoin(M.usdc, usdc);
+  coinB = makeCoin(M.usdc, usdc);
+  const btc = decalEmblem(g => {
+    g.rotate(0.24);
+    g.font = '700 360px Poppins'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('B', 6, 26);
+    for (const x of [-46, 20]) { g.fillRect(x, -196, 30, 70); g.fillRect(x, 120, 30, 70); }
+  });
+  const eth = decalEmblem(g => {
+    g.beginPath(); g.moveTo(0, -215); g.lineTo(128, 6); g.lineTo(0, 78); g.lineTo(-128, 6); g.closePath(); g.fill();
+    g.globalAlpha = 0.75;
+    g.beginPath(); g.moveTo(0, 108); g.lineTo(128, 34); g.lineTo(0, 215); g.lineTo(-128, 34); g.closePath(); g.fill();
+  });
+  // collateral coins orbiting the hero coin (vault 1) on a tilted ring
+  ringG = new THREE.Group();
+  ringMesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.006, 8, 200), M.ring);
+  ringMesh.rotation.x = Math.PI / 2;
+  ring2Mesh = new THREE.Mesh(new THREE.TorusGeometry(1, 0.004, 8, 200), M.ring2);
+  ring2Mesh.rotation.x = Math.PI / 2;
+  ringG.add(ringMesh, ring2Mesh);
+  scene.add(ringG);
+  for (let i = 0; i < 4; i++) {
+    const c = makeCoin(i % 2 ? M.eth : M.btc, i % 2 ? eth : btc);
+    ringG.add(c);
+    orbit.push(c);
+  }
+  // the safe
+  safe = new THREE.Group();
+  const body = new THREE.Mesh(new RoundedBoxGeometry(3.3, 3.5, 3.1, 6, 0.45), M.safe);
+  const recess = new THREE.Mesh(new RoundedBoxGeometry(2.78, 2.98, 0.2, 4, 0.14), M.recess);
+  recess.position.z = 1.5;
+  const door = new THREE.Mesh(new RoundedBoxGeometry(2.62, 2.82, 0.24, 5, 0.12), M.safe);
+  door.position.z = 1.6;
+  dial = new THREE.Group();
+  const dialBase = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.7, 0.12, 64), M.safe);
+  dialBase.rotation.x = Math.PI / 2;
+  const dialTop = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.56, 0.16, 64), M.safe);
+  dialTop.rotation.x = Math.PI / 2;
+  dialTop.position.z = 0.1;
+  dial.add(dialBase, dialTop);
+  for (let i = 0; i < 6; i++) {
+    const sp = new THREE.Mesh(new RoundedBoxGeometry(0.09, 0.5, 0.08, 2, 0.03), M.recess);
+    sp.position.set(Math.sin(i * Math.PI / 3) * 0.28, Math.cos(i * Math.PI / 3) * 0.28, 0.2);
+    sp.rotation.z = -i * Math.PI / 3;
+    dial.add(sp);
+  }
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.12, 32), M.safe);
+  hub.rotation.x = Math.PI / 2; hub.position.z = 0.24;
+  dial.add(hub);
+  dial.position.set(-0.25, -0.45, 1.74);
+  const latch = new THREE.Mesh(new RoundedBoxGeometry(0.16, 0.62, 0.2, 3, 0.06), M.safe);
+  latch.position.set(1.36, 0.05, 1.62);
+  const slot = new THREE.Mesh(new RoundedBoxGeometry(2.1, 0.06, 0.34, 2, 0.025), M.slot);
+  slot.position.set(0, 1.735, -0.05);
+  safe.add(body, recess, door, dial, latch, slot);
+  scene.add(safe);
+  // tokenised collateral block: 4x4x4 voxels that assemble (vault 2)
+  const N = 4, sp = 0.54;
+  cube = new THREE.InstancedMesh(new RoundedBoxGeometry(0.5, 0.5, 0.5, 2, 0.07), M.navy, N * N * N);
+  const r = rand(91);
+  const navy = new THREE.Color(0x0B1A3E), navy2 = new THREE.Color(0x1A3270), blue = new THREE.Color(0x2775CA);
+  let k = 0;
+  for (let ix = 0; ix < N; ix++) for (let iy = 0; iy < N; iy++) for (let iz = 0; iz < N; iz++) {
+    const dir = new THREE.Vector3(r() - 0.5, r() - 0.5, r() * 0.6).normalize();
+    VOX.push({
+      g: new THREE.Vector3((ix - 1.5) * sp, (iy - 1.5) * sp, (iz - 1.5) * sp),
+      s: dir.multiplyScalar(5 + r() * 5),
+      rot: new THREE.Euler(r() * 6, r() * 6, r() * 6),
+      d: iy * 0.13 + r() * 0.28,
+    });
+    const c = r() < 0.12 ? blue : r() < 0.3 ? navy2 : navy;
+    cube.setColorAt(k++, c);
+  }
+  cube.instanceColor.needsUpdate = true;
+  scene.add(cube);
+}
+
+const hide = o => { o.visible = false; };
+// Places a coin face-on to the viewer with a spin and returns it.
+function coinPose(c, x, y, z, s, ry, rx = 0, rz = 0) {
+  c.visible = true;
+  c.position.set(x, y, z);
+  c.scale.setScalar(s);
+  c.rotation.set(rx, ry, rz);
+}
+// Returns { alpha, fadeFrom } for compositing, or null if nothing 3D is on screen.
+function update3D(t) {
+  [coinA, coinB, safe, ringG, cube].forEach(hide);
+  if (coinA.parent !== scene) scene.add(coinA);
+  if (coinB.parent !== scene) scene.add(coinB);
+
+  // ---- S2: the safe rises, two coins drop into the slot ----
+  if (t >= T.s2 && t < T.s3) {
+    const rise = P(t, T.safeLand - 0.8, 0.8);
+    if (rise <= 0) return null;
+    safe.visible = true;
+    const sx = 1450, sy = 640;
+    safe.position.set(wx(sx), lerp(wy(sy) - 9, wy(sy), E.outBack(rise)) + Math.sin(t * 1.4) * 0.06, 0);
+    let sq = 0;
+    for (const h of [T.hit1, T.hit2]) sq += 0.07 * wob(t, h, 26, 7);
+    sq += 0.05 * wob(t, T.safeLand, 22, 7);
+    const sc = 1.5;
+    safe.scale.set(sc * (1 + sq * 0.6), sc * (1 - sq), sc * (1 + sq * 0.6));
+    safe.rotation.set(0.34, lerp(-1.4, -0.32, E.outCubic(rise)) + 0.06 * Math.sin(t * 0.9), 0);
+    dial.rotation.z = -(E.outCubic(P(t, T.hit1, 0.7)) + E.outCubic(P(t, T.hit2, 0.7))) * Math.PI * 0.75;
+    // coins: fall (safe-local), spin, then sink into the slot
+    [[coinA, T.hit1], [coinB, T.hit2]].forEach(([c, h]) => {
+      const pf = P(t, h - 1.0, 1.0), ps = P(t, h, 0.32);
+      if (pf <= 0 || ps >= 1) return;
+      safe.add(c);
+      const y = ps > 0 ? lerp(2.72, 0.5, E.inCubic(ps)) : lerp(7.5, 2.72, E.inQuad(pf));
+      coinPose(c, 0, y, -0.05, 0.6, (1 - E.outCubic(pf)) * Math.PI * 6, 0, (1 - pf) * 0.5);
+    });
+    return { alpha: 1 };
+  }
+  // ---- S3: hero USDC coin with collateral orbit ----
+  if (t >= T.s3 && t < T.s4) {
+    const pin = P(t, T.s3 - 0.05, 1.2);
+    const cx = wx(1430), cy = wy(500);
+    coinPose(coinA, cx, cy + Math.sin(t * 1.6) * 0.08, 0, lerp(0.3, 1.25, E.outBack(P(t, T.s3, 0.8))),
+      (1 - E.outCubic(pin)) * Math.PI * 5 + 0.35 * Math.sin(t * 1.1) - 0.15, 0.1 * Math.sin(t * 0.8), 0.05 * Math.sin(t * 0.7));
+    ringG.visible = true;
+    ringG.position.set(cx, cy, 0);
+    ringG.rotation.set(0.3, 0, -0.16);
+    const rr = 3.45 * E.outExpo(P(t, T.s3 + 0.35, 0.9));
+    ringMesh.scale.setScalar(Math.max(rr, 0.001));
+    ring2Mesh.scale.setScalar(Math.max(rr * 1.18, 0.001));
+    orbit.forEach((c, i) => {
+      const pop = E.outBack(P(t, T.s3 + 0.7 + i * 0.14, 0.6));
+      if (pop <= 0) { c.visible = false; return; }
+      const a = t * 0.75 + i * Math.PI / 2;
+      coinPose(c, Math.cos(a) * 3.45, 0, Math.sin(a) * 3.45, 0.36 * pop, t * 1.4 + i, -0.3, 0);
+    });
+    return { alpha: 1 };
+  }
+  // ---- S4: tokenised block assembles, a USDC coin orbits it ----
+  if (t >= T.s4 && t < T.s5) {
+    const out = E.inCubic(P(t, T.s4out + 0.05, 0.35));
+    const cx = wx(1450), cy = wy(455);
+    cube.visible = true;
+    cube.position.set(cx, cy, 0);
+    cube.scale.setScalar(1.5 * (1 - out * 0.4));
+    cube.rotation.set(0.42 + 0.05 * Math.sin(t * 0.9), 0.62 + (1 - E.outCubic(P(t, T.s4, 2.0))) * 1.6 + 0.22 * Math.sin(t * 0.6), 0);
+    VOX.forEach((v, i) => {
+      const q = P(t, T.s4 + 0.15 + v.d, 0.7);
+      const e = E.outCubic(q);
+      dummy.position.lerpVectors(v.s, v.g, e);
+      dummy.rotation.set(v.rot.x * (1 - e), v.rot.y * (1 - e), v.rot.z * (1 - e));
+      dummy.scale.setScalar(q <= 0 ? 0.0001 : lerp(0.2, 1, E.outBack(q)));
+      dummy.updateMatrix();
+      cube.setMatrixAt(i, dummy.matrix);
+    });
+    cube.instanceMatrix.needsUpdate = true;
+    ringG.visible = true;
+    ringG.position.set(cx, cy, 0);
+    ringG.rotation.set(0.28, 0, 0.12);
+    const rr = 2.9 * E.outExpo(P(t, T.s4 + 1.3, 0.9)) * (1 - out * 0.4);
+    ringMesh.scale.setScalar(Math.max(rr, 0.001));
+    ring2Mesh.scale.setScalar(Math.max(rr * 1.15, 0.001));
+    orbit.forEach(hide);
+    const pop = E.outBack(P(t, T.s4 + 1.5, 0.6));
+    if (pop > 0) {
+      ringG.add(coinA);
+      const a = t * 1.0 + 1.2;
+      coinPose(coinA, Math.cos(a) * rr, 0, Math.sin(a) * rr, 0.42 * pop, t * 1.6, -0.28, 0);
+    }
+    return { alpha: 1 - out };
+  }
+  // ---- S6: end card, the coin rests in the safe's slot ----
+  if (t >= T.s6) {
+    const rise = P(t, T.s6, 0.75);
+    safe.visible = true;
+    const sx = 1490, sy = 600;
+    safe.position.set(wx(sx), lerp(wy(sy) - 10, wy(sy), E.outBack(rise)) + Math.sin(t * 1.3) * 0.07, 0);
+    const sq = 0.06 * wob(t, T.land, 24, 7) + 0.05 * wob(t, T.s6 + 0.6, 20, 7);
+    const sc = 1.55;
+    safe.scale.set(sc * (1 + sq * 0.6), sc * (1 - sq), sc * (1 + sq * 0.6));
+    safe.rotation.set(0.36, lerp(1.2, -0.3, E.outCubic(rise)) + 0.08 * Math.sin(t * 0.7), 0);
+    dial.rotation.z = -E.outCubic(P(t, T.land, 0.9)) * Math.PI;
+    const pf = P(t, T.land - 0.85, 0.85);
+    if (pf > 0) {
+      safe.add(coinA);
+      const y = pf < 1 ? lerp(8, 2.3, E.inQuad(pf)) : 2.3 + 0.18 * wob(t, T.land, 16, 6) + 0.05 * Math.sin(t * 2.2);
+      coinPose(coinA, 0, y, -0.05, 0.6, (1 - E.outCubic(pf)) * Math.PI * 6 + 0.05 * Math.sin(t * 1.7), 0, 0.12 * wob(t, T.land, 12, 4));
+    }
+    return { alpha: 1, fadeFrom: 770, fadeTo: 900 };
+  }
+  return null;
+}
+const tmp = document.createElement('canvas');
+tmp.width = W; tmp.height = H;
+const tctx = tmp.getContext('2d');
+function draw3D(t) {
+  const r = update3D(t);
+  if (!r) return;
+  renderer.render(scene, camera);
+  let src = glc;
+  if (r.fadeFrom) {   // fade the bottom of the safe into the page, like the key visual
+    tctx.clearRect(0, 0, W, H);
+    tctx.globalCompositeOperation = 'source-over';
+    tctx.drawImage(glc, 0, 0);
+    tctx.globalCompositeOperation = 'destination-in';
+    const g = tctx.createLinearGradient(0, r.fadeFrom, 0, r.fadeTo);
+    g.addColorStop(0, 'rgba(0,0,0,1)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    tctx.fillStyle = g;
+    tctx.fillRect(0, 0, W, H);
+    tctx.globalCompositeOperation = 'source-over';
+    src = tmp;
+  }
+  ctx.save();
+  ctx.globalAlpha = r.alpha;
+  ctx.drawImage(src, 0, 0);
+  ctx.restore();
+}
+
+// =====================================================================
+// Scenes
+// =====================================================================
+const HEADER_SMALL = [48, 40, 0.56];
+function drawHeader(t) {
+  if (t < 0.1) return;
+  if (t < T.s2 + 0.2) {
+    // intro: mark assembles in the centre, turns, then the wordmark reveals and the lockup docks
+    const move = E.inOutCubic(P(t, T.word - 0.1, 0.55));
+    const dock = E.inOutExpo(P(t, T.dock, 0.6));
+    const sMark = 2.7, sFull = 1.8;
+    const ox0 = 960 - 54 * sMark, oy0 = 540 - 54 * sMark;          // mark centred
+    const ox1 = 960 - 604 * sFull / 2, oy1 = 540 - 54 * sFull;      // lockup centred
+    let s = lerp(sMark, sFull, move), ox = lerp(ox0, ox1, move), oy = lerp(oy0, oy1, move);
+    s = lerp(s, HEADER_SMALL[2], dock); ox = lerp(ox, HEADER_SMALL[0], dock); oy = lerp(oy, HEADER_SMALL[1], dock);
+    const rot = -Math.PI / 2 * (1 - E.outBackS(P(t, T.snap - 0.1, 0.6)));
+    drawLockup(ox, oy, s, t, { assemble: true, rot, word: P(t, T.word, 0.6) });
+    return;
+  }
+  const grow = E.inOutCubic(P(t, T.s6 + 0.1, 0.7));
+  const [x, y, s] = HEADER_SMALL;
+  const spin = t > T.s6 ? -Math.PI / 2 * (1 - E.outBackS(P(t, T.s6 + 0.1, 0.8))) : 0;
+  drawLockup(lerp(x, 56, grow), lerp(y, 92, grow), lerp(s, 1, grow), t, { rot: spin });
+}
+function drawIntroFX(t) {
+  if (t > 3) return;
+  ring(960, 540, t, T.snap, { r: 420, color: C.green, w: 8, dur: 0.9 });
+  ring(960, 540, t, T.snap + 0.08, { r: 620, color: C.usdc, w: 4, dur: 1.1, alpha: 0.5 });
+  burst(960, 540, t, T.snap, { n: 34, speed: 900, seed: 3, grav: 60 });
+  // soft light behind the mark while it assembles
+  const a = P(t, 0.1, 0.6) * (1 - P(t, T.dock, 0.4));
+  if (a > 0) glow(960, 540, 600, '#9BEFB0', 0.35 * a);
+}
+
+function drawS2(t) {
+  if (t < T.s2 || t >= T.s3) return;
+  const x = 110;
+  pill('NEW ON EARN', x, 228, 22, t, T.s2 + 0.05);
+  words([['Two', C.ink], ['new', C.ink]], x, 410, 160, 700, t, T.s2 + 0.15, { st: 0.12 });
+  words([['USDC', C.usdc], ['vaults', C.ink]], x, 575, 160, 700, t, T.s2 + 0.4, { st: 0.12 });
+  words([['on', C.grey], ['Startale', C.ink], ['App', C.ink]], x, 680, 64, 400, t, T.s2 + 0.75, { st: 0.07, ls: -0.5 });
+  // marker swoosh under "Two" once both coins are in
+  const m = E.outExpo(P(t, T.hit2 + 0.15, 0.6));
+  if (m > 0) {
+    font(160, 700, -4);
+    const w = ctx.measureText('Two').width;
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = 'rgba(140, 235, 160, 0.75)';
+    ctx.beginPath();
+    ctx.moveTo(x - 8, 392); ctx.lineTo(x - 8 + (w + 20) * m, 384); ctx.lineTo(x - 8 + (w + 20) * m, 420); ctx.lineTo(x - 8, 426);
+    ctx.fill();
+    ctx.restore();
+    words([['Two', C.ink]], x, 410, 160, 700, t, -10);   // redraw the word above the marker
+  }
+  // count-up popups at each drop
+  [[T.hit1, '+1 vault'], [T.hit2, '+1 vault']].forEach(([h, s], i) => {
+    const q = P(t, h + 0.05, 1.3);
+    if (q <= 0 || q >= 1) return;
+    const e = E.outBack(P(t, h + 0.05, 0.45));
+    ctx.save();
+    ctx.globalAlpha = 1 - E.inCubic(P(t, h + 0.85, 0.5));
+    const px = 1450 + (i ? 210 : -230), py = 300 - E.outCubic(q) * 90;
+    ctx.translate(px, py);
+    ctx.scale(e, e);
+    font(34, 700, 0);
+    const w = ctx.measureText(s).width + 48;
+    rrect(-w / 2, -30, w, 60, 30);
+    ctx.fillStyle = '#DCFCE7'; ctx.fill();
+    ctx.strokeStyle = 'rgba(21,128,61,0.25)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = C.greenDk; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(s, 0, 2);
+    ctx.restore();
+  });
+}
+function drawS2Back(t) {   // under the 3D layer
+  if (t < T.s2 || t >= T.s3) return;
+  const a = E.outCubic(P(t, T.safeLand - 0.5, 0.6));
+  if (a <= 0) return;
+  // contact shadow under the safe
+  ctx.save();
+  ctx.globalAlpha = a * 0.5;
+  const g = ctx.createRadialGradient(1440, 935, 0, 1440, 935, 300);
+  g.addColorStop(0, 'rgba(30,60,40,0.35)'); g.addColorStop(1, 'rgba(30,60,40,0)');
+  ctx.fillStyle = g;
+  ctx.setTransform(1, 0, 0, 0.16, 0, 935 * 0.84);
+  ctx.fillRect(1100, 600, 680, 680);
+  ctx.restore();
+  glow(1450, 600, 520, '#A7F0B8', 0.35 * a);
+}
+function drawS2Front(t) {   // above the 3D layer: speed lines, impacts
+  if (t < T.s2 || t >= T.s3) return;
+  [T.hit1, T.hit2].forEach((h, i) => {
+    const pf = P(t, h - 1.0, 1.0);
+    if (pf > 0.25 && pf < 1) {
+      const yc = lerp(-300, 330, E.inQuad(pf));
+      ctx.save();
+      ctx.strokeStyle = rgba(C.usdc, 0.35 * (pf - 0.25));
+      ctx.lineCap = 'round';
+      for (let k = 0; k < 5; k++) {
+        const x = 1450 + (k - 2) * 46, len = 120 + 70 * Math.sin(k * 2.1 + i);
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x, yc - 170 - len); ctx.lineTo(x, yc - 170 - (k % 2) * 30); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    burst(1450, 380, t, h, { n: 28, speed: 760, seed: 11 + i, a0: -Math.PI / 2, spread: Math.PI * 1.3, grav: 420 });
+    ring(1450, 385, t, h, { r: 330, squash: 0.32, color: C.green, w: 7, dur: 0.7 });
+  });
+}
+
+// iris: USDC-blue disc covers S2 from the safe, then opens onto vault 1 from the hero coin
+function drawIris(t) {
+  const R = 2300;
+  if (t >= T.iris && t < T.s3) {
+    const q = P(t, T.iris, T.s3 - T.iris);
+    const r = 60 + R * E.inCubic(q);
+    const g = ctx.createRadialGradient(1450, 470, 0, 1450, 520, r);
+    g.addColorStop(0, C.usdcHi); g.addColorStop(1, C.usdc);
+    ctx.fillStyle = g;
+    ctx.globalAlpha = clamp(q * 6);
+    ctx.beginPath(); ctx.arc(1450, 520, r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = r * 0.025;
+    ctx.beginPath(); ctx.arc(1450, 520, r * 0.9, 0, Math.PI * 2); ctx.stroke();
+    usdc2D(1450, 520, r / 1.59 * lerp(1, 2.2, E.inCubic(q)), '#fff');   // fly into the emblem
+    ctx.globalAlpha = 1;
+  } else if (t >= T.s3 && t < T.s3 + 0.6) {
+    const q = E.outCubic(P(t, T.s3, 0.6));
+    const r = R * q;
+    ctx.save();
+    ctx.fillStyle = C.usdc;
+    ctx.beginPath();
+    ctx.rect(-50, -50, W + 100, H + 100);
+    ctx.arc(1430, 500, r, 0, Math.PI * 2, true);
+    ctx.fill('evenodd');
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 10 * (1 - q) + 1;
+    ctx.beginPath(); ctx.arc(1430, 500, r, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// flat USDC emblem, same geometry as the 3D one (s = px per coin unit; the coin radius is 1.59)
+function usdc2D(x, y, s, color) {
+  const d = Math.PI / 180, a = 0.205, w = 0.118;
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(s, -s);
+  ctx.strokeStyle = color; ctx.fillStyle = color;
+  ctx.lineWidth = 0.15;
+  ctx.beginPath(); ctx.arc(0, 0, 0.915, 126 * d, 234 * d, false); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, 0, 0.915, -54 * d, 54 * d, false); ctx.stroke();
+  ctx.lineWidth = w;
+  ctx.beginPath(); ctx.arc(0, a, a, 28 * d, 270 * d, false); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, -a, a, 90 * d, -152 * d, true); ctx.stroke();
+  ctx.fillRect(-w / 2, 2 * a + w / 2 - 0.03, w, 0.15);
+  ctx.fillRect(-w / 2, -2 * a - w / 2 - 0.12, w, 0.15);
+  ctx.restore();
+}
+function bigNumber(n, t, t0, tOut) {
+  const a = E.outCubic(P(t, t0, 0.8)) * (1 - E.inCubic(P(t, tOut, 0.4)));
+  if (a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  font(560, 800, -20);
+  ctx.textAlign = 'right';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(39,117,202,0.2)';
+  ctx.strokeText(n, 1900 + (1 - a) * 80, 1010);
+  ctx.restore();
+}
+function divider(x, y, w, t, t0, tOut) {
+  const p = E.inOutCubic(P(t, t0, 0.7));
+  const out = E.inCubic(P(t, tOut, 0.35));
+  if (p <= 0 || out >= 1) return;
+  ctx.fillStyle = rgba('#0A0A0A', 0.1 * (1 - out));
+  ctx.fillRect(x, y, w * p, 2);
+}
+function label(text, x, y, t, t0, tOut, size = 28, color = C.grey) {
+  const e = env(t, t0, tOut, 0.5, 0.35);
+  if (e.a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = e.a;
+  font(size, 400, 0);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y + e.y * 0.5);
+  ctx.restore();
+}
+function logoIn(L, x, y, k, t, t0, tOut, sx, sw) {
+  const e = env(t, t0, tOut, 0.55, 0.35);
+  if (e.a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = e.a;
+  logo(L, x - (1 - e.p) * 40, y + e.q * -30, k, sx, sw);
+  ctx.restore();
+}
+
+function drawS3Back(t) {
+  if (t < T.s3 || t >= T.s4) return;
+  bigNumber('01', t, T.s3 + 0.3, T.wipe);
+  glow(1430, 500, 560, '#9FD2FF', 0.35 * E.outCubic(P(t, T.s3, 0.8)));
+  glow(1430, 500, 380, '#A7F0B8', 0.4 * E.outCubic(P(t, T.s3, 0.8)));
+}
+function drawS3(t) {
+  if (t < T.s3 || t >= T.s4) return;
+  const x = 110, out = T.wipe - 0.1, t0 = T.s3 + 0.25;
+  pill('NEW VAULT  01', x, 196, 22, t, t0, { tOut: out });
+  words([['Gauntlet', C.ink]], x, 380, 132, 700, t, t0 + 0.1, { tOut: out });
+  words([['USDC', C.usdc], ['Prime', C.ink]], x, 525, 132, 700, t, t0 + 0.25, { st: 0.1, tOut: out });
+  label('Curated by', x, 628, t, t0 + 0.55, out);
+  logoIn(LOGO.gauntlet, x - 8, 648, 0.95, t, t0 + 0.65, out);
+  handleTag('@gauntlet_xyz', x + 345, 690, t, t0 + 0.85, out);
+  divider(x, 778, 760, t, t0 + 0.8, out);
+  label('Lending against', x, 846, t, t0 + 1.0, out);
+  const mw = words([['Major', C.ink], ['crypto', C.ink], ['assets', C.ink]], x, 912, 50, 600, t, t0 + 1.1, { st: 0.07, tOut: out, ls: -0.5 });
+  // collateral chips
+  [['BTC', '#F7931A'], ['ETH', '#627EEA']].forEach(([s, c], i) => {
+    const e = E.outBack(P(t, t0 + 1.45 + i * 0.1, 0.5)) * (1 - E.inCubic(P(t, out, 0.3)));
+    if (e <= 0) return;
+    ctx.save();
+    ctx.translate(x + mw + 86 + i * 128, 896);
+    ctx.scale(e, e);
+    rrect(-56, -26, 112, 52, 26);
+    ctx.fillStyle = rgba(c, 0.12); ctx.fill();
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(-30, 0, 12, 0, Math.PI * 2); ctx.fill();
+    font(24, 600, 0.5); ctx.fillStyle = C.ink; ctx.textBaseline = 'middle';
+    ctx.fillText(s, -12, 2);
+    ctx.restore();
+  });
+}
+
+function drawWipe(t) {
+  if (t < T.wipe || t > T.s4 + 0.45) return;
+  const e1 = E.inOutCubic(P(t, T.wipe, T.s4 - T.wipe)), e2 = E.inOutCubic(P(t, T.s4, 0.45));
+  const lead = lerp(-400, W + 400, e1), trail = lerp(-400, W + 400, e2), sl = 260;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(trail, -10); ctx.lineTo(lead, -10); ctx.lineTo(lead - sl, H + 10); ctx.lineTo(trail - sl, H + 10);
+  ctx.closePath();
+  ctx.clip();
+  const g = ctx.createLinearGradient(0, H, W, 0);
+  g.addColorStop(0, '#E9FAC0'); g.addColorStop(0.5, '#BFF3C9'); g.addColorStop(1, '#A6EDBF');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(80, 170, 100, 0.25)';
+  ctx.beginPath();
+  for (let y = 0; y < H; y += 16) for (let x = (y / 16) % 2 ? 8 : 0; x < W; x += 16) {
+    const r = 2.6 * clamp(1 - Math.abs((x + (H - y) * 0.6) / (W * 1.4) - 0.5) * 1.8);
+    if (r > 0.3) { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, Math.PI * 2); }
+  }
+  ctx.fill();
+  drawMark(960, 540, 3.2, (t - T.wipe) * 2.2, t, false, '#fff');
+  ctx.restore();
+  // leading / trailing edges
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 6;
+  for (const xe of [lead, trail]) { ctx.beginPath(); ctx.moveTo(xe, -10); ctx.lineTo(xe - sl, H + 10); ctx.stroke(); }
+}
+
+function drawS4Back(t) {
+  if (t < T.s4 || t >= T.s5) return;
+  const a = E.outCubic(P(t, T.s4 + 0.2, 0.8)) * (1 - E.inCubic(P(t, T.s4out, 0.4)));
+  bigNumber('02', t, T.s4 + 0.3, T.s4out);
+  glow(1450, 470, 560, '#9FB6FF', 0.3 * a);
+  glow(1450, 470, 360, '#A7F0B8', 0.4 * a);
+}
+function drawS4(t) {
+  if (t < T.s4 || t >= T.s5) return;
+  const x = 110, out = T.s4out, t0 = T.s4 + 0.25;
+  pill('NEW VAULT  02', x, 196, 22, t, t0, { tOut: out });
+  words([['Flowmark', C.ink]], x, 380, 132, 700, t, t0 + 0.1, { tOut: out });
+  words([['fGenesis', C.ink]], x, 525, 132, 700, t, t0 + 0.25, { tOut: out });
+  label('Curated by', x, 628, t, t0 + 0.55, out);
+  logoIn(LOGO.flowmark, x - 6, 652, 0.92, t, t0 + 0.65, out);
+  handleTag('@Flowmark_xyz', x + 372, 690, t, t0 + 0.85, out);
+  divider(x, 778, 760, t, t0 + 0.8, out);
+  label('Lending against', x, 846, t, t0 + 1.0, out);
+  const w = words([['PGNGI+', C.ink]], x, 912, 50, 600, t, t0 + 1.1, { tOut: out, ls: 0 });
+  label('tokenized by @AssetoFinance', x + w + 22, 910, t, t0 + 1.3, out, 28, C.grey);
+  // tag under the block
+  const e = env(t, T.s4 + 1.35, out, 0.6, 0.35);
+  if (e.a > 0) {
+    ctx.save();
+    ctx.globalAlpha = e.a;
+    ctx.translate(1450, 820 + e.y);
+    rrect(-170, -40, 340, 80, 40);
+    ctx.fillStyle = C.navy; ctx.fill();
+    font(40, 700, 1); ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('PGNGI+', 0, 3);
+    ctx.restore();
+  }
+  const e2 = env(t, T.s4 + 1.6, out, 0.6, 0.35);
+  if (e2.a > 0) {
+    ctx.save();
+    ctx.globalAlpha = e2.a;
+    font(24, 400, 0.5); ctx.fillStyle = C.grey; ctx.textAlign = 'right';
+    ctx.fillText('tokenized by', 1396, 922 + e2.y);
+    logo(LOGO.asseto, 1404, 893 + e2.y, 0.55);
+    ctx.restore();
+  }
+}
+
+// ---- S5: powered by Morpho ----
+const BUTTERFLY = { x: 960, y: 560 };
+function bez(p0, p1, p2, p3, u) {
+  const v = 1 - u;
+  return [v * v * v * p0[0] + 3 * v * v * u * p1[0] + 3 * v * u * u * p2[0] + u * u * u * p3[0],
+          v * v * v * p0[1] + 3 * v * v * u * p1[1] + 3 * v * u * u * p2[1] + u * u * u * p3[1]];
+}
+function drawButterfly(cx, cy, k, open, flap, a = 1) {
+  const L = LOGO.wings, ww = L.w * k, hh = L.h * k;
+  const half = 33;   // wing image is symmetric about x = 33 (svg px)
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(cx, cy);
+    ctx.scale(open * flap, 1);
+    if (side < 0) ctx.drawImage(L.c, 0, 0, half * L.s, L.h * L.s, -ww / 2, -hh / 2, ww / 2, hh);
+    else ctx.drawImage(L.c, half * L.s, 0, (L.w - half) * L.s, L.h * L.s, 0, -hh / 2, ww / 2, hh);
+    ctx.restore();
+  }
+}
+function drawS5(t) {
+  if (t < T.s4out + 0.2 || t >= T.s6 + 0.1) return;
+  const t0 = T.s5, out = E.inCubic(P(t, T.s5out, 0.5));
+  const bx = BUTTERFLY.x, by = BUTTERFLY.y - E.inCubic(P(t, T.s5out, 0.55)) * 700;
+  // glow
+  const ga = E.outCubic(P(t, t0, 0.8)) * (1 - out);
+  glow(bx, by, 520, '#7FB2FF', 0.45 * ga);
+  glow(bx, by, 300, '#A7F0B8', 0.35 * ga);
+  // beams from the two vaults into Morpho
+  const vaults = [[560, 270, 'Gauntlet USDC Prime', 'gauntlet', 0, 75], [1360, 270, 'Flowmark fGenesis', 'flowmark', 0, 72]];
+  vaults.forEach(([vx, vy, name, lg, sx, sw], i) => {
+    const pin = P(t, t0 + 0.55 + i * 0.12, 0.6);
+    const e = E.outBack(pin);
+    const p0 = [vx, vy + 50], p1 = [vx, vy + 220], p2 = [bx + (i ? 160 : -160), by - 260], p3 = [bx + (i ? 40 : -40), by - 70];
+    const draw = E.inOutCubic(P(t, t0 + 0.9 + i * 0.1, 0.7));
+    if (draw > 0 && out < 1) {
+      ctx.save();
+      ctx.globalAlpha = 1 - out;
+      ctx.strokeStyle = rgba(C.morpho, 0.35);
+      ctx.lineWidth = 3;
+      ctx.setLineDash([10, 12]);
+      ctx.lineDashOffset = -t * 60;
+      ctx.beginPath();
+      for (let u = 0; u <= draw + 1e-6; u += 0.02) { const [px, py] = bez(p0, p1, p2, p3, Math.min(u, draw)); u === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py); }
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (draw >= 1) {   // USDC flowing in
+        for (let k = 0; k < 4; k++) {
+          const u = (t * 0.55 + k / 4 + i * 0.13) % 1;
+          const [px, py] = bez(p0, p1, p2, p3, u);
+          const s = 9 * Math.sin(u * Math.PI);
+          ctx.fillStyle = C.usdc;
+          ctx.beginPath(); ctx.arc(px, py, s + 2, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.beginPath(); ctx.arc(px, py, (s + 2) * 0.45, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+    if (e <= 0 || out >= 1) return;
+    ctx.save();
+    ctx.globalAlpha = clamp(pin * 3) * (1 - out);
+    ctx.translate(vx, vy - out * 40);
+    ctx.scale(e, e);
+    font(32, 600, -0.3);
+    const tw = ctx.measureText(name).width, w = tw + 140;
+    ctx.shadowColor = 'rgba(20,40,80,0.12)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 12;
+    rrect(-w / 2, -48, w, 96, 48);
+    ctx.fillStyle = '#fff'; ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.strokeStyle = 'rgba(10,10,10,0.08)'; ctx.lineWidth = 2; ctx.stroke();
+    const L = LOGO[lg], k = 0.62;
+    logo(L, -w / 2 + 34, -L.h * k / 2, k, sx, sw);
+    ctx.fillStyle = C.ink; ctx.textBaseline = 'middle';
+    ctx.fillText(name, -w / 2 + 108, 3);
+    ctx.restore();
+  });
+  // butterfly
+  const open = E.outBackS(P(t, t0 + 0.05, 0.7));
+  if (open > 0) {
+    const flapRate = lerp(1.4, 4.5, E.inCubic(P(t, T.s5out, 0.5)));
+    const flap = 0.78 + 0.22 * Math.cos((t - t0) * Math.PI * 2 * flapRate);
+    const k = lerp(4.6, 2.2, out);
+    drawButterfly(bx, by, k, open, flap, 1 - E.inCubic(P(t, T.s5out + 0.25, 0.3)));
+  }
+  ring(bx, by, t, t0 + 0.15, { r: 380, color: C.morpho, w: 6, dur: 0.9, alpha: 0.6 });
+  burst(bx, by, t, t0 + 0.15, { n: 24, speed: 700, seed: 21, colors: [C.morpho, '#7FB2FF', C.green], grav: 40 });
+  // caption
+  const ca = env(t, t0 + 0.45, T.s5out, 0.6, 0.35);
+  if (ca.a > 0) {
+    ctx.save();
+    ctx.globalAlpha = ca.a;
+    font(40, 400, 0); ctx.fillStyle = C.grey; ctx.textAlign = 'center';
+    ctx.fillText('Powered by', 960, 806 + ca.y);
+    ctx.restore();
+  }
+  const ma = env(t, t0 + 0.6, T.s5out, 0.6, 0.35);
+  if (ma.a > 0) {
+    ctx.save();
+    ctx.globalAlpha = ma.a;
+    const L = LOGO.morpho, k = 1.35, sx = 92, sw = L.w - 92;
+    logo(L, 960 - sw * k / 2, 826 + ma.y, k, sx, sw);
+    ctx.restore();
+  }
+}
+
+// ---- S6: end card (mirrors the key visual) ----
+const DISCLAIMER = [
+  [['Disclaimer:', 600], [' Digital asset prices are volatile, and the value of your investment can go up or down. You are solely responsible for your financial decisions. Startale Group is not liable for any losses you may incur.', 300]],
+  [['The APY shown is an estimate of rewards over the selected timeframe and may not reflect actual or fiat returns;  actual rewards may differ. APY offered will be at Startale’s discretion and may be modified/ or', 300]],
+  [['discontinued at any time. Always DYOR — for more details, please see our Terms of Use.', 300]],
+];
+function drawS6Back(t) {
+  if (t < T.s6) return;
+  const a = E.outCubic(P(t, T.s6, 0.8));
+  glow(1490, 520, 560, '#A7F0B8', 0.4 * a);
+}
+function drawS6(t) {
+  if (t < T.s6) return;
+  const t0 = T.s6 + 0.25;
+  words([['New', C.ink], ['Ways', C.ink], ['to', C.ink], ['Earn', C.ink]], 64, 462, 126, 600, t, t0, { st: 0.1, ls: -2.5 });
+  words([['More', C.ink], ['USDC', C.usdc], ['vaults', C.ink], ['now', C.ink]], 66, 562, 68, 400, t, t0 + 0.45, { st: 0.06, ls: -1 });
+  words([['available', C.ink], ['under', C.ink], ['Earn', C.ink]], 66, 634, 68, 400, t, t0 + 0.6, { st: 0.06, ls: -1 });
+  // underline sweep on "Earn"
+  const u = E.inOutCubic(P(t, t0 + 0.9, 0.6));
+  if (u > 0) {
+    font(126, 600, -2.5);
+    const pre = ctx.measureText('New Ways to ').width, ew = ctx.measureText('Earn').width;
+    ctx.save();
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = 'rgba(140, 235, 160, 0.8)';
+    ctx.fillRect(64 + pre, 448, ew * u, 26);
+    ctx.restore();
+    words([['New', C.ink], ['Ways', C.ink], ['to', C.ink], ['Earn', C.ink]], 64, 462, 126, 600, t, -10, { st: 0.1, ls: -2.5 });
+  }
+  // CTA
+  const ce = E.outBack(P(t, T.land + 0.15, 0.6));
+  if (ce > 0) {
+    font(30, 600, 0);
+    const text = 'Deposit now and start earning';
+    const w = ctx.measureText(text).width + 40 + 96;
+    ctx.save();
+    ctx.translate(66, 718);
+    ctx.scale(ce, ce);
+    ctx.shadowColor = 'rgba(0,0,0,0.18)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 10;
+    rrect(0, -38, w, 76, 38);
+    ctx.fillStyle = C.ink; ctx.fill();
+    ctx.shadowColor = 'transparent';
+    // shine sweep
+    const sh = ((t - T.land) * 0.45) % 1;
+    ctx.save();
+    ctx.clip();
+    const sx = lerp(-200, w + 200, sh);
+    const g = ctx.createLinearGradient(sx - 80, 0, sx + 80, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.18)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(sx - 80, -40, 160, 80);
+    ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, 36, 2);
+    // arrow badge
+    const bxp = w - 42, bob = Math.sin((t - T.land) * 5) * 5;
+    ctx.fillStyle = '#9BF0AE';
+    ctx.beginPath(); ctx.arc(bxp, 0, 28, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = C.ink; ctx.lineWidth = 4.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(bxp, -12 + bob); ctx.lineTo(bxp, 12 + bob);
+    ctx.moveTo(bxp - 10, 3 + bob); ctx.lineTo(bxp, 13 + bob); ctx.lineTo(bxp + 10, 3 + bob); ctx.stroke();
+    ctx.restore();
+  }
+  // partner logos at their key-visual positions
+  [['asseto', 70, 805], ['gauntlet', 550, 795], ['morpho', 1025, 800], ['flowmark', 1490, 805]].forEach(([n, x, y], i) => {
+    const e = env(t, T.land + 0.35 + i * 0.1, null, 0.6);
+    if (e.a <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = e.a;
+    logo(LOGO[n], x, y + e.y * 1.2, 1);
+    ctx.restore();
+  });
+  // disclaimer
+  const da = E.outCubic(P(t, T.land + 0.9, 0.8));
+  if (da > 0) {
+    ctx.save();
+    ctx.globalAlpha = da;
+    ctx.fillStyle = '#B3B8BF';
+    DISCLAIMER.forEach((line, i) => {
+      let x = 74;
+      line.forEach(([s, wgt]) => {
+        font(17.4, wgt, -0.15);
+        ctx.fillText(s, x, 968 + i * 20);
+        x += ctx.measureText(s).width;
+      });
+    });
+    ctx.restore();
+  }
+}
+function drawS6Front(t) {
+  if (t < T.s6) return;
+  ring(1490, 330, t, T.land, { r: 300, squash: 0.3, color: C.green, w: 7, dur: 0.7 });
+  burst(1490, 330, t, T.land, { n: 30, speed: 760, seed: 33, a0: -Math.PI / 2, spread: Math.PI * 1.3, grav: 420 });
+  // twinkles around the coin
+  ctx.save();
+  ctx.fillStyle = '#fff';
+  for (let i = 0; i < 4; i++) {
+    const ph = (t - T.land - 0.4 - i * 0.37) % 1.5;
+    if (t < T.land + 0.4 || ph < 0 || ph > 0.6) continue;
+    const a = Math.sin(ph / 0.6 * Math.PI);
+    const pos = [[1380, 160], [1610, 250], [1640, 120], [1360, 300]][i];
+    ctx.shadowColor = 'rgba(39,117,202,0.6)'; ctx.shadowBlur = 12;
+    sparkle(pos[0], pos[1], 18, a, ph);
+  }
+  ctx.restore();
+}
+function flash(t) {   // short white flash into the end card
+  const q = P(t, T.s6 - 0.12, 0.5);
+  if (q <= 0 || q >= 1) return;
+  ctx.fillStyle = `rgba(255,255,255,${Math.sin(q * Math.PI) * 0.85})`;
+  ctx.fillRect(-50, -50, W + 100, H + 100);
+}
+
+function shake(t) {
+  let a = 0;
+  for (const [h, s] of [[T.hit1, 7], [T.hit2, 8], [T.land, 7], [T.snap, 4]]) if (t >= h) a += s * Math.exp(-(t - h) * 9);
+  return [Math.sin(t * 91) * a, Math.cos(t * 77) * a];
+}
+
+function render(t) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  const [sx, sy] = shake(t);
+  ctx.translate(sx, sy);
+  drawBG(t, lerp(0.75, 1, E.outCubic(P(t, 0, 1.2))));
+  drawIntroFX(t);
+  drawS2Back(t); drawS3Back(t); drawS4Back(t); drawS6Back(t);
+  draw3D(t);
+  drawS2(t); drawS2Front(t);
+  drawS3(t);
+  drawS4(t);
+  drawS5(t);
+  drawS6(t); drawS6Front(t);
+  drawHeader(t);
+  drawIris(t);
+  drawWipe(t);
+  flash(t);
+}
+
+await loadAssets();
+build3D();
+window.render = render;
+window.DURATION = DURATION;
+window.READY = true;
+if (!location.search.includes('render')) {
+  const start = parseFloat(new URLSearchParams(location.search).get('t') || '0');
+  const t0 = performance.now() - start * 1000;
+  const loop = () => { render(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); };
+  loop();
+}
+</script>
+</body>
+</html>
